@@ -1,10 +1,12 @@
 ## codexbridge GPT-5.5 Fork
 
-This fork patches BYOKEY v1.2.0 so Codex OAuth can serve `gpt-5.5` through the local OpenAI-compatible gateway.
+This fork patches BYOKEY v1.2.0 so Codex OAuth can serve `gpt-5.5` and Claude OAuth can serve current Anthropic model IDs through the local OpenAI-compatible gateway.
 
 Changes in this fork:
 
 - Adds `gpt-5.5` to the Codex model registry.
+- Adds Anthropic's current Claude API IDs `claude-opus-4-8` and `claude-fable-5` to the Claude model registry.
+- Updates the Claude Code fallback fingerprint from `2.1.109` to `2.1.173`.
 - Updates the Codex client fingerprint from `0.120.0` to `0.139.0`.
 - Adds the current Codex identity headers and `client_metadata` required by `chatgpt.com/backend-api/codex/responses`.
 - Makes both `/v1/chat/completions` and `/v1/responses` work with `gpt-5.5`.
@@ -25,10 +27,26 @@ Authenticate Codex:
 byokey login codex
 ```
 
+Authenticate Claude Code. If native Claude Code is already logged in, import its
+credentials into BYOKEY:
+
+```bash
+byokey import-claude-code --account claude-code --label "Claude Code"
+byokey switch claude claude-code
+```
+
+Or start a Claude OAuth login directly:
+
+```bash
+byokey login claude
+```
+
 On a headless server, forward the OAuth callback port from your local machine:
 
 ```bash
 ssh -N -L 1455:127.0.0.1:1455 user@server
+# Claude OAuth uses port 54545 instead:
+ssh -N -L 54545:127.0.0.1:54545 user@server
 ```
 
 Then print/open the login URL on the server. If the browser opener does not print the URL, temporarily wrap `xdg-open`:
@@ -93,6 +111,20 @@ curl -sS -N http://127.0.0.1:8018/v1/chat/completions \
   -d '{"model":"gpt-5.5","messages":[{"role":"user","content":"Say hello in one short sentence."}],"stream":true}'
 ```
 
+Test current Claude models:
+
+```bash
+curl -sS -N http://127.0.0.1:8018/v1/chat/completions \
+  -H "Authorization: Bearer any" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-opus-4-8","messages":[{"role":"user","content":"Say hello in one short sentence."}],"stream":true,"max_tokens":32}'
+
+curl -sS -N http://127.0.0.1:8018/v1/chat/completions \
+  -H "Authorization: Bearer any" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"claude-fable-5","messages":[{"role":"user","content":"Say hello in one short sentence."}],"stream":true,"max_tokens":32}'
+```
+
 Test `gpt-5.5` Responses API:
 
 ```bash
@@ -111,7 +143,7 @@ sudo systemctl status byokey.service --no-pager -l
 journalctl -u byokey.service -n 100 --no-pager
 ```
 
-Note: reinstalling or updating BYOKEY from upstream may overwrite this patched binary and remove `gpt-5.5` support until upstream adds equivalent support.
+Note: reinstalling or updating BYOKEY from upstream may overwrite this patched binary and remove `gpt-5.5`, `claude-opus-4-8`, and `claude-fable-5` support until upstream adds equivalent support.
 
 ---
 

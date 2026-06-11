@@ -41,16 +41,16 @@ pub const ANTHROPIC_VERSION: &str = "2023-06-01";
 ///
 /// `prompt-caching-2024-07-31` removed: prompt caching is GA since Dec 2024;
 /// the beta header is now rejected by the API.
-pub const ANTHROPIC_BETA: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,context-management-2025-06-27,prompt-caching-scope-2026-01-05,advanced-tool-use-2025-11-20,effort-2025-11-24,structured-outputs-2025-12-15,fast-mode-2026-02-01,token-efficient-tools-2026-03-28";
+pub const ANTHROPIC_BETA: &str = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advisor-tool-2026-03-01,effort-2025-11-24,fallback-credit-2026-06-01,extended-cache-ttl-2025-04-11";
 
 /// User-Agent matching the Claude CLI version.
-pub const USER_AGENT: &str = "claude-cli/2.1.109 (external, cli)";
+pub const USER_AGENT: &str = "claude-cli/2.1.173 (external, sdk-cli)";
 
-/// Anthropic SDK package version (matches @anthropic-ai/sdk bundled with CLI 2.1.109).
-pub const SDK_PACKAGE_VERSION: &str = "0.74.0";
+/// Anthropic SDK package version (matches current @anthropic-ai/sdk).
+pub const SDK_PACKAGE_VERSION: &str = "0.94.0";
 
 /// Node.js runtime version for X-Stainless-Runtime-Version.
-pub const RUNTIME_VERSION: &str = "v24.14.1";
+pub const RUNTIME_VERSION: &str = "v24.3.0";
 
 /// Credential resolved at request time.
 enum Credential {
@@ -68,9 +68,8 @@ enum Credential {
 /// - Request identity (`x-client-request-id`)
 /// - Access flags (`x-app`)
 ///
-/// The `anthropic-dangerous-direct-browser-access` header is included only
-/// when `is_api_key` is `true` (raw `x-api-key` auth). On OAuth
-/// (`Authorization: Bearer`) the real Claude Code CLI omits this header.
+/// The `anthropic-dangerous-direct-browser-access` header is included for both
+/// API-key and OAuth auth because current Claude Code sends it in both modes.
 ///
 /// # Panics
 ///
@@ -78,15 +77,13 @@ enum Credential {
 /// in HTTP header values. All default profiles use ASCII-only values.
 pub fn build_fingerprint_headers(
     profile: &DeviceProfile,
-    is_api_key: bool,
+    _is_api_key: bool,
 ) -> reqwest::header::HeaderMap {
     let mut h = reqwest::header::HeaderMap::new();
-    if is_api_key {
-        h.insert(
-            "anthropic-dangerous-direct-browser-access",
-            "true".parse().expect("static header"),
-        );
-    }
+    h.insert(
+        "anthropic-dangerous-direct-browser-access",
+        "true".parse().expect("static header"),
+    );
     h.insert("x-app", "cli".parse().expect("static header"));
     h.insert(
         reqwest::header::USER_AGENT,
@@ -260,7 +257,8 @@ impl ProviderExecutor for ClaudeExecutor {
             .map_err(|e| byokey_types::ByokError::Translation(e.to_string()))?;
         normalize_temperature_for_thinking(&mut body);
 
-        // Apply cloaking with identity from the device profile.
+        // Apply Claude Code identity from the device profile. OAuth access to
+        // higher-tier Claude Code models depends on this billing/metadata shape.
         if let Some(ref cc) = self.cloak_config
             && cc.enabled
         {
@@ -273,6 +271,17 @@ impl ProviderExecutor for ClaudeExecutor {
                 &fingerprint.device_id,
                 &account_uuid,
                 &fingerprint.session_id,
+                "cli",
+                None,
+            );
+        } else if matches!(credential, Credential::Bearer(_)) {
+            let account_uuid =
+                uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, scope_key.as_bytes()).to_string();
+            cloak::inject_billing_header(
+                &mut body,
+                Some(&fingerprint.device_id),
+                Some(&account_uuid),
+                Some(&fingerprint.session_id),
                 "cli",
                 None,
             );

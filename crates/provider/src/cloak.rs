@@ -24,7 +24,7 @@ use byokey_config::CloakConfig;
 use sha2::{Digest as _, Sha256};
 
 /// Default CLI version for billing header and User-Agent.
-const DEFAULT_CLI_VERSION: &str = "2.1.109";
+const DEFAULT_CLI_VERSION: &str = "2.1.173";
 
 /// Salt used by Claude Code's fingerprint.ts — must match the backend validator.
 const FINGERPRINT_SALT: &str = "59cf53e54c78";
@@ -586,7 +586,7 @@ mod tests {
 
         // claude-cli UA → cli
         assert_eq!(
-            derive_cc_entrypoint(Some("claude-cli/2.1.109 (external, cli)")),
+            derive_cc_entrypoint(Some("claude-cli/2.1.173 (external, cli)")),
             "cli"
         );
         // claude-code UA (case-insensitive) → cli

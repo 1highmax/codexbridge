@@ -157,6 +157,16 @@ const REGISTRY: &[ModelEntry] = &[
     },
     // Claude (Anthropic — dashes)
     ModelEntry {
+        id: "claude-fable-5",
+        providers: &[ProviderId::Claude],
+        thinking: None,
+    },
+    ModelEntry {
+        id: "claude-opus-4-8",
+        providers: &[ProviderId::Claude],
+        thinking: None,
+    },
+    ModelEntry {
         id: "claude-opus-4-6",
         providers: &[ProviderId::Claude],
         thinking: Some(&ThinkingSupport {
