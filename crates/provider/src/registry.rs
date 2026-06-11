@@ -50,6 +50,11 @@ const REGISTRY: &[ModelEntry] = &[
     },
     // Codex-primary, also on Copilot
     ModelEntry {
+        id: "gpt-5.5",
+        providers: &[ProviderId::Codex],
+        thinking: None,
+    },
+    ModelEntry {
         id: "gpt-5.4",
         providers: &[ProviderId::Codex, ProviderId::Copilot],
         thinking: None,

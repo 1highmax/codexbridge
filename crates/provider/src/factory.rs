@@ -78,7 +78,13 @@ pub fn make_executor_with_cache(
     profile_cache: Option<Arc<DeviceProfileCache>>,
     versions: &VersionStore,
 ) -> Option<Box<dyn ProviderExecutor>> {
-    let ua = versions.get(provider).and_then(|v| v.user_agent.clone());
+    let ua = if provider == &ProviderId::Codex {
+        // BYOKEY's remote fingerprint currently advertises Codex 0.120.0,
+        // which ChatGPT rejects for newer Codex-only models such as gpt-5.5.
+        Some("codex-tui/0.139.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464".to_string())
+    } else {
+        versions.get(provider).and_then(|v| v.user_agent.clone())
+    };
     match provider {
         ProviderId::Claude => Some(Box::new(
             ClaudeExecutor::builder()

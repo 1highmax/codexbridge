@@ -1,3 +1,120 @@
+## codexbridge GPT-5.5 Fork
+
+This fork patches BYOKEY v1.2.0 so Codex OAuth can serve `gpt-5.5` through the local OpenAI-compatible gateway.
+
+Changes in this fork:
+
+- Adds `gpt-5.5` to the Codex model registry.
+- Updates the Codex client fingerprint from `0.120.0` to `0.139.0`.
+- Adds the current Codex identity headers and `client_metadata` required by `chatgpt.com/backend-api/codex/responses`.
+- Makes both `/v1/chat/completions` and `/v1/responses` work with `gpt-5.5`.
+
+Build and install the patched binary:
+
+```bash
+cargo build --release --bin byokey
+mkdir -p ~/.byokey/bin
+cp target/release/byokey ~/.byokey/bin/byokey
+chmod +x ~/.byokey/bin/byokey
+export PATH="$HOME/.byokey/bin:$PATH"
+```
+
+Authenticate Codex:
+
+```bash
+byokey login codex
+```
+
+On a headless server, forward the OAuth callback port from your local machine:
+
+```bash
+ssh -N -L 1455:127.0.0.1:1455 user@server
+```
+
+Then print/open the login URL on the server. If the browser opener does not print the URL, temporarily wrap `xdg-open`:
+
+```bash
+mkdir -p ~/bin
+cat > ~/bin/xdg-open <<'EOF'
+#!/bin/sh
+printf '%s\n' "$1" | tee /tmp/byokey-oauth-url
+exit 0
+EOF
+chmod +x ~/bin/xdg-open
+PATH="$HOME/bin:$PATH" byokey login codex
+rm ~/bin/xdg-open
+```
+
+Run as a systemd service:
+
+```ini
+[Unit]
+Description=BYOKEY local AI API gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hochmax
+Group=hochmax
+Environment=HOME=/home/hochmax
+Environment=PATH=/home/hochmax/.byokey/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=/home/hochmax
+ExecStart=/home/hochmax/.byokey/bin/byokey serve --host 127.0.0.1 --port 8018 --log-file /home/hochmax/.byokey/server.log
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Install and start the service:
+
+```bash
+sudo cp byokey.service /etc/systemd/system/byokey.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now byokey.service
+systemctl status byokey.service --no-pager -l
+```
+
+Use the local OpenAI-compatible endpoint:
+
+```bash
+export OPENAI_BASE_URL=http://127.0.0.1:8018/v1
+export OPENAI_API_KEY=any
+```
+
+Test `gpt-5.5` chat completions:
+
+```bash
+curl -sS -N http://127.0.0.1:8018/v1/chat/completions \
+  -H "Authorization: Bearer any" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.5","messages":[{"role":"user","content":"Say hello in one short sentence."}],"stream":true}'
+```
+
+Test `gpt-5.5` Responses API:
+
+```bash
+curl -sS -N http://127.0.0.1:8018/v1/responses \
+  -H "Authorization: Bearer any" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"gpt-5.5","store":false,"stream":true,"input":[{"role":"user","content":[{"type":"input_text","text":"Say hello in one short sentence."}]}]}'
+```
+
+Useful service commands:
+
+```bash
+sudo systemctl restart byokey.service
+sudo systemctl stop byokey.service
+sudo systemctl status byokey.service --no-pager -l
+journalctl -u byokey.service -n 100 --no-pager
+```
+
+Note: reinstalling or updating BYOKEY from upstream may overwrite this patched binary and remove `gpt-5.5` support until upstream adds equivalent support.
+
+---
+
 <h4 align="right"><strong>English</strong> | <a href="./docs/README_CN.md">简体中文</a></h4>
 
 <p align="center">

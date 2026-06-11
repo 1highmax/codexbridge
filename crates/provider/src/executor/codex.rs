@@ -38,7 +38,7 @@ const OPENAI_API_PATH: &str = "/v1/chat/completions";
 const CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 
 /// Default User-Agent (compile-time fallback).
-const DEFAULT_USER_AGENT: &str = "codex-tui/0.120.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464";
+const DEFAULT_USER_AGENT: &str = "codex-tui/0.139.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464";
 
 /// Executor for the `OpenAI` (Codex) API.
 pub struct CodexExecutor {
@@ -96,22 +96,40 @@ impl CodexExecutor {
     // ── OAuth / Codex Responses API path ─────────────────────────────────────
 
     /// Issues a Codex Responses API request and returns raw bytes + HTTP status.
-    async fn codex_request(&self, body: &Value, token: &str) -> Result<rquest::Response> {
+    async fn codex_request(
+        &self,
+        body: &Value,
+        token: &str,
+        session_id: &str,
+        thread_id: &str,
+        window_id: &str,
+    ) -> Result<rquest::Response> {
         let url = format!("{CODEX_BASE_URL}/responses");
-        let session_id = random_uuid();
         let builder = self
             .ph
             .client()
             .post(&url)
             .header("content-type", "application/json")
             .header("authorization", format!("Bearer {token}"))
-            .header("Session_id", session_id)
+            .header("session-id", session_id)
+            .header("thread-id", thread_id)
+            .header("x-client-request-id", thread_id)
+            .header("x-codex-window-id", window_id)
+            .header("x-codex-installation-id", prompt_cache_key(token))
+            .header("x-responsesapi-include-timing-metrics", "true")
             .header("User-Agent", self.user_agent.as_str())
             .header("Originator", "codex_cli_rs")
             .header("Accept", "text/event-stream")
             .header("Connection", "Keep-Alive")
             .json(body);
         self.ph.send(builder).await
+    }
+
+    fn add_codex_metadata(body: &mut Value, token: &str, window_id: &str) {
+        body["client_metadata"] = serde_json::json!({
+            "x-codex-installation-id": prompt_cache_key(token),
+            "x-codex-window-id": window_id,
+        });
     }
 
     /// Translate a `ChatRequest` body `Value` to the Codex Responses API JSON
@@ -132,8 +150,14 @@ impl CodexExecutor {
     async fn codex_stream(&self, body: Value, token: &str) -> Result<ProviderResponse> {
         let mut codex_body = Self::translate_body(body)?;
         codex_body["stream"] = Value::Bool(true);
+        let session_id = random_uuid();
+        let thread_id = random_uuid();
+        let window_id = random_uuid();
+        Self::add_codex_metadata(&mut codex_body, token, &window_id);
 
-        let resp = self.codex_request(&codex_body, token).await?;
+        let resp = self
+            .codex_request(&codex_body, token, &session_id, &thread_id, &window_id)
+            .await?;
 
         let raw: ByteStream = ProviderHttp::byte_stream(resp);
 
@@ -145,8 +169,14 @@ impl CodexExecutor {
     async fn codex_complete(&self, body: Value, token: &str) -> Result<ProviderResponse> {
         let mut codex_body = Self::translate_body(body)?;
         codex_body["stream"] = Value::Bool(true); // Codex always streams
+        let session_id = random_uuid();
+        let thread_id = random_uuid();
+        let window_id = random_uuid();
+        Self::add_codex_metadata(&mut codex_body, token, &window_id);
 
-        let resp = self.codex_request(&codex_body, token).await?;
+        let resp = self
+            .codex_request(&codex_body, token, &session_id, &thread_id, &window_id)
+            .await?;
 
         let mut all = Vec::new();
         let mut stream = resp.bytes_stream().map_err(ByokError::from);

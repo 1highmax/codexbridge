@@ -33,8 +33,8 @@ use crate::{AppState, error::ApiError};
 
 const CODEX_RESPONSES_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
 const OPENAI_RESPONSES_URL: &str = "https://api.openai.com/v1/responses";
-const CODEX_VERSION: &str = "0.120.0";
-const CODEX_USER_AGENT: &str = "codex-tui/0.120.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464";
+const CODEX_VERSION: &str = "0.139.0";
+const CODEX_USER_AGENT: &str = "codex-tui/0.139.0 (Mac OS 26.0.1; arm64) Apple_Terminal/464";
 const GEMINI_MODELS_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 const AMP_BACKEND: &str = "https://ampcode.com";
 
@@ -100,6 +100,19 @@ pub async fn codex_responses_passthrough(
         obj.remove("temperature");
         obj.remove("top_p");
         obj.remove("stream_options");
+
+        let installation_id = prompt_cache_key(&token);
+        let window_id = random_uuid();
+        let metadata = obj
+            .entry("client_metadata")
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+        if let Some(metadata_obj) = metadata.as_object_mut() {
+            metadata_obj.insert(
+                "x-codex-installation-id".to_string(),
+                Value::String(installation_id),
+            );
+            metadata_obj.insert("x-codex-window-id".to_string(), Value::String(window_id));
+        }
     }
 
     let upstream_url = if is_oauth {
@@ -119,11 +132,24 @@ pub async fn codex_responses_passthrough(
     let start = std::time::Instant::now();
 
     let resp = if is_oauth {
+        let session_id = random_uuid();
+        let thread_id = random_uuid();
+        let window_id = body
+            .get("client_metadata")
+            .and_then(|metadata| metadata.get("x-codex-window-id"))
+            .and_then(Value::as_str)
+            .map_or_else(random_uuid, ToString::to_string);
         state
             .http
             .post(CODEX_RESPONSES_URL)
             .header("authorization", format!("Bearer {token}"))
             .header("content-type", "application/json")
+            .header("session-id", session_id)
+            .header("thread-id", thread_id.clone())
+            .header("x-client-request-id", thread_id)
+            .header("x-codex-window-id", window_id)
+            .header("x-codex-installation-id", prompt_cache_key(&token))
+            .header("x-responsesapi-include-timing-metrics", "true")
             .header("Version", CODEX_VERSION)
             .header("User-Agent", CODEX_USER_AGENT)
             .header("Originator", "codex_cli_rs")
@@ -234,6 +260,15 @@ pub async fn codex_responses_passthrough(
             .record_success_for(&model_name, provider, &account_id, input, output);
         Ok((status, axum::Json(json)).into_response())
     }
+}
+
+fn random_uuid() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
+fn prompt_cache_key(token: &str) -> String {
+    let seed = format!("cli-proxy-api:codex:prompt-cache:{token}");
+    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, seed.as_bytes()).to_string()
 }
 
 /// Handles `POST /api/provider/google/v1beta/models/{action}`.
