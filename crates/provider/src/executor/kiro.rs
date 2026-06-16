@@ -122,7 +122,7 @@ impl ProviderExecutor for KiroExecutor {
         if stream {
             let byte_stream: ByteStream = ProviderHttp::byte_stream(resp);
             Ok(ProviderResponse::Stream(
-                super::claude::translate_claude_sse(byte_stream),
+                super::claude::translate_claude_sse(byte_stream, false),
             ))
         } else {
             let resp_bytes = resp.bytes().await.map_err(byokey_types::ByokError::from)?;
