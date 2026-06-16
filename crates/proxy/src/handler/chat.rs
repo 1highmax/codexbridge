@@ -104,6 +104,18 @@ pub async fn chat_completions(
     }
 
     let model_name = suffix.model.clone();
+    let request_stream = request.stream;
+    let request_message_count = request.messages.len();
+    let request_extra_keys = {
+        let mut keys = request.extra.keys().cloned().collect::<Vec<_>>();
+        keys.sort();
+        keys
+    };
+    let request_tool_count = request
+        .extra
+        .get("tools")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
     // Executor-based chat path currently does its own account rotation;
     // the specific account isn't surfaced back, so attribute to
     // DEFAULT_ACCOUNT until we plumb it through the executor trait.
@@ -136,6 +148,30 @@ pub async fn chat_completions(
             Ok(sse_response(StatusCode::OK, mapped))
         }
         Err(e) => {
+            if let byokey_types::ByokError::Upstream { status, body, .. } = &e {
+                tracing::error!(
+                    upstream_status = *status,
+                    upstream_body = %body,
+                    model = %model_name,
+                    provider = %provider,
+                    stream = request_stream,
+                    message_count = request_message_count,
+                    tool_count = request_tool_count,
+                    extra_keys = ?request_extra_keys,
+                    "chat completion upstream error body"
+                );
+            } else {
+                tracing::error!(
+                    error = %e,
+                    model = %model_name,
+                    provider = %provider,
+                    stream = request_stream,
+                    message_count = request_message_count,
+                    tool_count = request_tool_count,
+                    extra_keys = ?request_extra_keys,
+                    "chat completion provider error"
+                );
+            }
             state
                 .usage
                 .record_failure_for(&model_name, &provider, account_id);
