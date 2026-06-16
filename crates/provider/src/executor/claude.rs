@@ -337,6 +337,9 @@ impl ProviderExecutor for ClaudeExecutor {
 /// Drop OpenAI Chat Completions fields that Anthropic rejects when translated.
 fn remove_anthropic_incompatible_openai_fields(request: &mut ChatRequest) {
     request.extra.remove("stream_options");
+    request.extra.remove("temperature");
+    request.extra.remove("top_p");
+    request.extra.remove("n");
 }
 
 /// Force `temperature` to `1` when thinking is active.
@@ -471,6 +474,9 @@ mod tests {
             "model": "claude-opus-4-8",
             "stream": true,
             "stream_options": {"include_usage": true},
+            "temperature": 0.7,
+            "top_p": 1,
+            "n": 1,
             "messages": [{"role": "user", "content": "hi"}],
             "max_tokens": 32
         }))
@@ -480,6 +486,9 @@ mod tests {
         let body = request.into_body();
 
         assert!(body.get("stream_options").is_none());
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("top_p").is_none());
+        assert!(body.get("n").is_none());
         assert_eq!(body["stream"], true);
         assert_eq!(body["max_tokens"], 32);
     }
