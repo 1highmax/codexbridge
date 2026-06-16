@@ -222,7 +222,7 @@ impl ClaudeExecutor {
 
 #[async_trait]
 impl ProviderExecutor for ClaudeExecutor {
-    async fn chat_completion(&self, request: ChatRequest) -> Result<ProviderResponse> {
+    async fn chat_completion(&self, mut request: ChatRequest) -> Result<ProviderResponse> {
         let stream = request.stream;
         let credential = self.get_credential().await?;
 
@@ -241,6 +241,7 @@ impl ProviderExecutor for ClaudeExecutor {
         let translator = AnthropicRequestTranslator::new(&transport, None);
 
         // Translate: BYOKEY ChatRequest → aigw ChatRequest → Anthropic body.
+        remove_anthropic_incompatible_openai_fields(&mut request);
         let aigw_request: aigw_core::model::ChatRequest =
             serde_json::from_value(request.into_body())
                 .map_err(|e| byokey_types::ByokError::Translation(e.to_string()))?;
@@ -256,6 +257,13 @@ impl ProviderExecutor for ClaudeExecutor {
         let mut body: Value = serde_json::from_slice(&translated.body)
             .map_err(|e| byokey_types::ByokError::Translation(e.to_string()))?;
         normalize_temperature_for_thinking(&mut body);
+
+        // Claude Code OAuth expects first-party tool names. OpenAI-compatible
+        // clients such as OpenCode send lowercase tool names, which Anthropic
+        // classifies as third-party tool traffic unless remapped.
+        if matches!(credential, Credential::Bearer(_)) {
+            cloak::remap_tool_names_request(&mut body);
+        }
 
         // Apply Claude Code identity from the device profile. OAuth access to
         // higher-tier Claude Code models depends on this billing/metadata shape.
@@ -277,11 +285,17 @@ impl ProviderExecutor for ClaudeExecutor {
         } else if matches!(credential, Credential::Bearer(_)) {
             let account_uuid =
                 uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, scope_key.as_bytes()).to_string();
-            cloak::inject_billing_header(
+            let cc = CloakConfig {
+                enabled: true,
+                strict_mode: true,
+                sensitive_words: vec!["OpenCode".to_string(), "opencode".to_string()],
+            };
+            cloak::apply_cloaking(
                 &mut body,
-                Some(&fingerprint.device_id),
-                Some(&account_uuid),
-                Some(&fingerprint.session_id),
+                &cc,
+                &fingerprint.device_id,
+                &account_uuid,
+                &fingerprint.session_id,
                 "cli",
                 None,
             );
@@ -318,6 +332,11 @@ impl ProviderExecutor for ClaudeExecutor {
     fn supported_models(&self) -> Vec<String> {
         registry::models_for_provider(&ProviderId::Claude)
     }
+}
+
+/// Drop OpenAI Chat Completions fields that Anthropic rejects when translated.
+fn remove_anthropic_incompatible_openai_fields(request: &mut ChatRequest) {
+    request.extra.remove("stream_options");
 }
 
 /// Force `temperature` to `1` when thinking is active.
@@ -420,6 +439,7 @@ pub(crate) fn translate_claude_sse(inner: ByteStream) -> ByteStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn make_executor() -> ClaudeExecutor {
         let (client, auth) = crate::http_util::test_auth();
@@ -443,5 +463,63 @@ mod tests {
             .api_key("sk-ant-test".to_string())
             .build();
         assert!(!ex.supported_models().is_empty());
+    }
+
+    #[test]
+    fn test_removes_openai_stream_options_for_anthropic() {
+        let mut request: ChatRequest = serde_json::from_value(json!({
+            "model": "claude-opus-4-8",
+            "stream": true,
+            "stream_options": {"include_usage": true},
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 32
+        }))
+        .unwrap();
+
+        remove_anthropic_incompatible_openai_fields(&mut request);
+        let body = request.into_body();
+
+        assert!(body.get("stream_options").is_none());
+        assert_eq!(body["stream"], true);
+        assert_eq!(body["max_tokens"], 32);
+    }
+
+    #[test]
+    fn test_remaps_claude_code_tool_names_for_oauth() {
+        let mut body = json!({
+            "tools": [
+                {"name": "bash", "input_schema": {"type": "object"}},
+                {"name": "read", "input_schema": {"type": "object"}},
+                {"name": "pi_start_pi", "input_schema": {"type": "object"}}
+            ],
+            "tool_choice": {"type": "tool", "name": "bash"}
+        });
+
+        cloak::remap_tool_names_request(&mut body);
+
+        assert_eq!(body["tools"][0]["name"], "Bash");
+        assert_eq!(body["tools"][1]["name"], "Read");
+        assert_eq!(body["tools"][2]["name"], "pi_start_pi");
+        assert_eq!(body["tool_choice"]["name"], "Bash");
+    }
+
+    #[test]
+    fn test_default_oauth_cloaking_obfuscates_opencode() {
+        let mut body = json!({
+            "system": [{"type": "text", "text": "You are OpenCode running opencode."}],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
+        });
+        let cc = CloakConfig {
+            enabled: true,
+            strict_mode: true,
+            sensitive_words: vec!["OpenCode".to_string(), "opencode".to_string()],
+        };
+
+        cloak::apply_cloaking(&mut body, &cc, "device", "account", "session", "cli", None);
+        let serialized = serde_json::to_string(&body).unwrap();
+
+        assert!(!serialized.contains("OpenCode"));
+        assert!(!serialized.contains("opencode"));
+        assert!(serialized.contains("Claude Code"));
     }
 }
