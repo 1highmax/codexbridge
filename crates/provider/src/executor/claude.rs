@@ -225,6 +225,7 @@ impl ProviderExecutor for ClaudeExecutor {
     async fn chat_completion(&self, mut request: ChatRequest) -> Result<ProviderResponse> {
         let stream = request.stream;
         let credential = self.get_credential().await?;
+        let remap_tools = matches!(credential, Credential::Bearer(_));
 
         // Resolve fingerprint: use cached profile when available, else statics.
         let scope_key = match &credential {
@@ -261,7 +262,7 @@ impl ProviderExecutor for ClaudeExecutor {
         // Claude Code OAuth expects first-party tool names. OpenAI-compatible
         // clients such as OpenCode send lowercase tool names, which Anthropic
         // classifies as third-party tool traffic unless remapped.
-        if matches!(credential, Credential::Bearer(_)) {
+        if remap_tools {
             cloak::remap_tool_names_request(&mut body);
         }
 
@@ -316,10 +317,21 @@ impl ProviderExecutor for ClaudeExecutor {
 
         if stream {
             let byte_stream: ByteStream = ProviderHttp::byte_stream(resp);
-            Ok(ProviderResponse::Stream(translate_claude_sse(byte_stream)))
+            Ok(ProviderResponse::Stream(translate_claude_sse(
+                byte_stream,
+                remap_tools,
+            )))
         } else {
             // Use aigw's response translator for non-streaming responses.
-            let resp_bytes = resp.bytes().await.map_err(byokey_types::ByokError::from)?;
+            let mut resp_bytes = resp.bytes().await.map_err(byokey_types::ByokError::from)?;
+            if remap_tools {
+                let mut raw: Value = serde_json::from_slice(&resp_bytes)
+                    .map_err(|e| byokey_types::ByokError::Translation(e.to_string()))?;
+                cloak::reverse_remap_tool_names_response(&mut raw);
+                resp_bytes = serde_json::to_vec(&raw)
+                    .map(Bytes::from)
+                    .map_err(|e| byokey_types::ByokError::Translation(e.to_string()))?;
+            }
             let aigw_response = AnthropicResponseTranslator
                 .translate_response(http::StatusCode::OK, &resp_bytes)
                 .map_err(|e| byokey_types::ByokError::Translation(e.to_string()))?;
@@ -334,12 +346,38 @@ impl ProviderExecutor for ClaudeExecutor {
     }
 }
 
-/// Drop OpenAI Chat Completions fields that Anthropic rejects when translated.
+/// Drop `OpenAI` Chat Completions fields that Anthropic rejects when translated.
 fn remove_anthropic_incompatible_openai_fields(request: &mut ChatRequest) {
     request.extra.remove("stream_options");
     request.extra.remove("temperature");
     request.extra.remove("top_p");
     request.extra.remove("n");
+    normalize_opencode_thinking(&mut request.extra);
+    for message in &mut request.messages {
+        if let Some(obj) = message.as_object_mut() {
+            obj.remove("cache_control");
+        }
+    }
+}
+
+fn normalize_opencode_thinking(extra: &mut std::collections::HashMap<String, Value>) {
+    let Some(thinking) = extra.get_mut("thinking") else {
+        return;
+    };
+    if thinking.get("mode").is_some() {
+        return;
+    }
+    let Some(kind) = thinking.get("type").and_then(Value::as_str) else {
+        extra.remove("thinking");
+        return;
+    };
+    match kind {
+        "disabled" | "none" => *thinking = serde_json::json!({"mode": "disabled"}),
+        "auto" | "adaptive" => *thinking = serde_json::json!({"mode": "auto"}),
+        _ => {
+            extra.remove("thinking");
+        }
+    }
 }
 
 /// Force `temperature` to `1` when thinking is active.
@@ -373,7 +411,7 @@ fn normalize_temperature_for_thinking(body: &mut Value) {
 /// Delegates semantic parsing to [`aigw`]'s `AnthropicStreamParser`, then
 /// converts the canonical `StreamEvent`s to `OpenAI` SSE bytes via
 /// [`stream_bridge`](crate::stream_bridge).
-pub(crate) fn translate_claude_sse(inner: ByteStream) -> ByteStream {
+pub(crate) fn translate_claude_sse(inner: ByteStream, reverse_tool_names: bool) -> ByteStream {
     use crate::stream_bridge::{SseContext, stream_events_to_sse};
     use aigw::anthropic::translate::AnthropicStreamParser;
     use aigw_core::translate::StreamParser;
@@ -394,7 +432,7 @@ pub(crate) fn translate_claude_sse(inner: ByteStream) -> ByteStream {
             ctx: SseContext::default(),
             done: false,
         },
-        |mut s| async move {
+        move |mut s| async move {
             loop {
                 if let Some(nl) = s.buf.iter().position(|&b| b == b'\n') {
                     let raw: Vec<u8> = s.buf.drain(..=nl).collect();
@@ -402,7 +440,18 @@ pub(crate) fn translate_claude_sse(inner: ByteStream) -> ByteStream {
                     let line = line.trim_end_matches(['\r', '\n']);
 
                     if let Some(data) = line.strip_prefix("data: ") {
-                        match s.parser.parse_event("", data) {
+                        let data = if reverse_tool_names {
+                            serde_json::from_str::<Value>(data).map_or_else(
+                                |_| data.to_string(),
+                                |mut ev| {
+                                    cloak::reverse_remap_tool_name_sse(&mut ev);
+                                    serde_json::to_string(&ev).unwrap_or_else(|_| data.to_string())
+                                },
+                            )
+                        } else {
+                            data.to_string()
+                        };
+                        match s.parser.parse_event("", &data) {
                             Ok(events) if !events.is_empty() => {
                                 let sse_bytes = stream_events_to_sse(&events, &mut s.ctx);
                                 if !sse_bytes.is_empty() {
@@ -469,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn test_removes_openai_stream_options_for_anthropic() {
+    fn test_removes_openai_only_fields_for_anthropic() {
         let mut request: ChatRequest = serde_json::from_value(json!({
             "model": "claude-opus-4-8",
             "stream": true,
@@ -477,7 +526,8 @@ mod tests {
             "temperature": 0.7,
             "top_p": 1,
             "n": 1,
-            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": {"type": "disabled"},
+            "messages": [{"role": "user", "content": "hi", "cache_control": {"type": "ephemeral"}}],
             "max_tokens": 32
         }))
         .unwrap();
@@ -489,6 +539,8 @@ mod tests {
         assert!(body.get("temperature").is_none());
         assert!(body.get("top_p").is_none());
         assert!(body.get("n").is_none());
+        assert_eq!(body["thinking"], json!({"mode": "disabled"}));
+        assert!(body["messages"][0].get("cache_control").is_none());
         assert_eq!(body["stream"], true);
         assert_eq!(body["max_tokens"], 32);
     }

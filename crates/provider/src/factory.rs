@@ -67,7 +67,7 @@ pub fn make_executor(
 /// Like [`make_executor`] but accepts an optional [`DeviceProfileCache`]
 /// that is forwarded to providers supporting fingerprint stabilisation
 /// (currently only Claude).
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub fn make_executor_with_cache(
     provider: &ProviderId,
     api_key: Option<String>,
