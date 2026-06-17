@@ -352,6 +352,7 @@ fn remove_anthropic_incompatible_openai_fields(request: &mut ChatRequest) {
     request.extra.remove("temperature");
     request.extra.remove("top_p");
     request.extra.remove("n");
+    request.extra.remove("reasoning_effort");
     normalize_opencode_thinking(&mut request.extra);
     for message in &mut request.messages {
         if let Some(obj) = message.as_object_mut() {
@@ -526,6 +527,7 @@ mod tests {
             "temperature": 0.7,
             "top_p": 1,
             "n": 1,
+            "reasoning_effort": "low",
             "thinking": {"type": "disabled"},
             "messages": [{"role": "user", "content": "hi", "cache_control": {"type": "ephemeral"}}],
             "max_tokens": 32
@@ -539,6 +541,7 @@ mod tests {
         assert!(body.get("temperature").is_none());
         assert!(body.get("top_p").is_none());
         assert!(body.get("n").is_none());
+        assert!(body.get("reasoning_effort").is_none());
         assert_eq!(body["thinking"], json!({"mode": "disabled"}));
         assert!(body["messages"][0].get("cache_control").is_none());
         assert_eq!(body["stream"], true);
