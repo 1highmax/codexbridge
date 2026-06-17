@@ -2,6 +2,63 @@
 
 This fork patches BYOKEY v1.2.0 so Codex OAuth can serve `gpt-5.5` and Claude OAuth can serve current Anthropic model IDs through the local OpenAI-compatible gateway.
 
+### Using BYOKEY as an OpenCode provider
+
+BYOKEY's OpenAI-compatible endpoint (`http://127.0.0.1:8018/v1`) can be wired
+into [OpenCode](https://opencode.ai) as a custom provider. Add the provider to
+`~/.config/opencode/opencode.json` (or `opencode.jsonc`):
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "enabled_providers": ["byokey"],
+  "provider": {
+    "byokey": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "BYOKEY",
+      "options": {
+        "baseURL": "http://127.0.0.1:8018/v1",
+        "apiKey": "any"
+      },
+      "models": {
+        "claude-opus-4-8": {
+          "name": "Claude Opus 4.8 via BYOKEY",
+          "reasoning": true,
+          "tool_call": true,
+          "limit": { "context": 200000, "output": 64000 },
+          "variants": {
+            "none":  { "thinking": { "mode": "disabled" } },
+            "low":   { "thinking": { "mode": "level", "level": "low" } },
+            "medium":{ "thinking": { "mode": "level", "level": "medium" } },
+            "high":  { "thinking": { "mode": "level", "level": "high" } },
+            "xhigh": { "thinking": { "mode": "level", "level": "x_high" } }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+Notes:
+
+- `reasoning: true` plus a `variants` map is what makes OpenCode show the
+  thinking-level selector for the model.
+- Each variant carries BYOKEY's canonical `thinking` object. The level enum is
+  `minimal`, `low`, `medium`, `high`, `x_high`, `max` (note the underscore in
+  `x_high`). Avoid `max` unless the model's `output` limit is large enough to
+  hold a 128k-token thinking budget.
+- OpenCode also injects a `reasoning_effort` field for reasoning-capable models.
+  This fork strips `reasoning_effort` on the Claude path because Anthropic
+  rejects it (`reasoning_effort: Extra inputs are not permitted`) while keeping
+  the `thinking` payload intact.
+
+Select a variant from the OpenCode model picker, or from the CLI:
+
+```bash
+opencode run -m byokey/claude-opus-4-8 --variant high --thinking 'your prompt'
+```
+
 Changes in this fork:
 
 - Adds `gpt-5.5` to the Codex model registry.
